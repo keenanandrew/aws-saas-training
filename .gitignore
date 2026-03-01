@@ -1,0 +1,11 @@
+# Secrets / local-only
+*.env
+*.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.kdbx
+*credentials*
+*secret*
+.aws/
