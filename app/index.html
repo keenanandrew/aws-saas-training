@@ -607,9 +607,12 @@
     const progress = loadProgress();
     progress[taskId] = !progress[taskId];
     saveProgress(progress);
+    const main = document.getElementById('mainContent');
+    const scrollPos = main.scrollTop;
     renderSidebar();
-    renderWeek(activeWeekId);
+    renderWeek(activeWeekId, true);
     updateGlobalProgress();
+    main.scrollTop = scrollPos;
   }
 
   function getWeekProgress(week) {
@@ -686,7 +689,7 @@
     return result;
   }
 
-  function renderWeek(weekId) {
+  function renderWeek(weekId, preserveScroll) {
     const week = curriculum.weeks.find(w => w.id === weekId);
     if (!week) { renderWelcome(); return; }
 
@@ -775,7 +778,7 @@
     }
 
     main.innerHTML = html;
-    main.scrollTop = 0;
+    if (!preserveScroll) main.scrollTop = 0;
   }
 
   function renderWelcome() {
