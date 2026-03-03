@@ -1,0 +1,775 @@
+{
+  "title": "AWS SaaS Architecture — From Zero to Production",
+  "subtitle": "A technical course for engineers who want to understand AWS infrastructure, not just use it.",
+  "costCap": "£25/month",
+  "region": "eu-west-2",
+  "weeks": [
+    {
+      "id": 1,
+      "title": "IAM + CLI",
+      "tagline": "Operate AWS without being a liability",
+      "objective": "Establish a secure account structure with role-based access. Never use root again.",
+      "problem": {
+        "title": "Why IAM is the first thing you learn",
+        "content": "In January 2020, an engineer at a fintech startup committed AWS root credentials to a public GitHub repo. Within 4 hours, attackers had spun up 200 GPU instances for crypto mining. The bill was $46,000. AWS eventually issued a partial credit, but the company lost two weeks of engineering time to incident response.\n\nThis is not unusual. Leaked credentials are the #1 cause of unexpected AWS bills. Root credentials are especially dangerous because they have unrestricted access to every service and cannot be limited by IAM policies.\n\nThe solution is straightforward: lock root behind MFA, create IAM users with scoped permissions, and use roles for day-to-day work. You learn IAM first because every other week in this course depends on it. A misconfigured role in week 6 could expose your database to the internet."
+      },
+      "concepts": [
+        {
+          "title": "The IAM Mental Model",
+          "content": "IAM answers three questions:\n\n1. **Who are you?** (Authentication) — Users, roles, and federated identities.\n2. **What can you do?** (Authorization) — Policies attached to users/roles that allow or deny actions.\n3. **On what?** (Resource scope) — ARNs that specify exactly which S3 bucket, EC2 instance, or DynamoDB table a policy applies to.\n\nEvery AWS API call is evaluated against these three questions. If any answer is 'no' or 'not specified', the call is denied. This is called default-deny."
+        },
+        {
+          "title": "Users vs Roles",
+          "content": "A **user** has long-lived credentials (access key + secret key). These sit in ~/.aws/credentials and don't expire. If they leak, an attacker has access until you revoke them.\n\nA **role** has no permanent credentials. Instead, you 'assume' a role and receive temporary credentials (via STS) that expire after 1-12 hours. If they leak, the damage window is limited.\n\nProduction best practice: humans use roles via SSO/federation. Services use roles attached to their compute (EC2 instance profile, ECS task role, Lambda execution role). Access keys for IAM users are a last resort.\n\nFor this training environment, you'll create an IAM user for CLI access but switch to a developer role for actual work. This mirrors how teams operate: your login identity is separate from your working permissions."
+        },
+        {
+          "title": "Policy Anatomy",
+          "content": "An IAM policy is a JSON document. Here's the structure that matters:\n\n```json\n{\n  \"Version\": \"2012-10-17\",\n  \"Statement\": [{\n    \"Effect\": \"Allow\",\n    \"Action\": [\"s3:GetObject\", \"s3:PutObject\"],\n    \"Resource\": \"arn:aws:s3:::my-bucket/*\",\n    \"Condition\": {\n      \"StringEquals\": { \"s3:prefix\": \"uploads/\" }\n    }\n  }]\n}\n```\n\n- **Effect**: Allow or Deny. Deny always wins.\n- **Action**: The API calls this statement covers. `s3:*` means all S3 actions. `s3:GetObject` means only reading objects.\n- **Resource**: The ARN(s) this applies to. `*` means everything — avoid this.\n- **Condition**: Optional constraints. IP ranges, time windows, MFA requirements, tag values.\n\nThe Version field is always `2012-10-17`. It's not a date you set — it's the policy language version. The only other valid value is `2008-10-17` and you should never use it."
+        }
+      ],
+      "tasks": [
+        {
+          "id": "w1t1",
+          "title": "Enable MFA on root account",
+          "description": "Go to the IAM console > Security Credentials > Assign MFA device. Use a virtual MFA app (Google Authenticator, Authy, or 1Password).",
+          "verification": "The IAM dashboard should show a green checkmark next to 'MFA on root account'.",
+          "why": "Root has unrestricted access. MFA ensures a leaked password alone isn't enough to take over the account."
+        },
+        {
+          "id": "w1t2",
+          "title": "Create an IAM admin user",
+          "description": "Create a user with the AdministratorAccess managed policy. Generate an access key for CLI use. Store it in a password manager — never in a file or environment variable on disk.",
+          "verification": "Run `aws sts get-caller-identity --profile training-admin` and confirm it returns the correct account ID and user ARN.",
+          "why": "This user replaces root for day-to-day admin work. Even though it has full access, it's revocable and auditable — root is neither."
+        },
+        {
+          "id": "w1t3",
+          "title": "Create a developer role",
+          "description": "Create a role called `training-developer` with a trust policy allowing your admin user to assume it. Attach a policy scoped to the services you'll use in this course (EC2, VPC, S3, RDS, ECS, Lambda, CloudWatch, Route 53).",
+          "verification": "Run `aws sts assume-role --role-arn arn:aws:iam::ACCOUNT_ID:role/training-developer --role-session-name test --profile training-admin` and confirm you get temporary credentials.",
+          "why": "This simulates real team environments. Developers don't have admin access — they assume a scoped role. If your developer role can't do something later in the course, you'll need to update its policy. That's how you learn least-privilege iteration."
+        },
+        {
+          "id": "w1t4",
+          "title": "Create a custom IAM policy",
+          "description": "Write a policy from scratch (not using the visual editor) that allows read-only access to S3 and EC2, but only for resources tagged with `Environment=training`.",
+          "verification": "Attach this policy to a test user or role, then confirm it correctly allows reading training-tagged resources and denies access to untagged ones.",
+          "why": "Managed policies are a starting point, but real-world security requires custom policies. Writing them by hand forces you to understand the JSON structure and teaches you about tag-based access control, which is how multi-tenant SaaS apps isolate customer data."
+        },
+        {
+          "id": "w1t5",
+          "title": "Configure AWS CLI profiles",
+          "description": "Set up named profiles in `~/.aws/config` and `~/.aws/credentials`. Create profiles for both the admin user and the developer role (using `source_profile` for role chaining).",
+          "verification": "Run `aws sts get-caller-identity --profile training-developer` and confirm it shows the role ARN, not the user ARN.",
+          "why": "Named profiles prevent you from accidentally running commands with the wrong credentials. In production environments, teams often have profiles for dev, staging, and production — and accidentally deploying to the wrong one is a rite of passage you want to avoid."
+        },
+        {
+          "id": "w1t6",
+          "title": "Set up billing alerts",
+          "description": "Create a budget with a $30 USD threshold and SNS-based email alerts at 80% and 100% of the budget.",
+          "verification": "Check the AWS Budgets console and confirm the budget and alerts are active.",
+          "why": "AWS billing is opaque and delayed. A NAT gateway you forgot to destroy costs ~$32/month. A misconfigured auto-scaling group can launch instances indefinitely. Alerts are your safety net."
+        }
+      ],
+      "codeChallenge": {
+        "title": "Policy Debugging Exercise",
+        "description": "The following IAM policy is supposed to allow a developer to manage EC2 instances only in eu-west-2, but it has three bugs. Find and fix them.",
+        "code": "{\n  \"Version\": \"2012-10-17\",\n  \"Statement\": [\n    {\n      \"Effect\": \"Allow\",\n      \"Action\": \"ec2:*\",\n      \"Resource\": \"*\"\n    },\n    {\n      \"Effect\": \"Deny\",\n      \"Action\": \"ec2:TerminateInstances\",\n      \"Resource\": \"*\",\n      \"Condition\": {\n        \"StringNotEquals\": {\n          \"aws:RequestedRegion\": \"eu-west-2\"\n        }\n      }\n    }\n  ]\n}",
+        "hints": [
+          "The first statement has no region constraint — it allows ec2:* globally.",
+          "The Deny only covers TerminateInstances, but RunInstances, CreateVolume, etc. are still allowed in other regions.",
+          "ec2:* includes IAM-adjacent actions like ec2:CreateKeyPair. Is that intended for a developer role?"
+        ],
+        "solution": "{\n  \"Version\": \"2012-10-17\",\n  \"Statement\": [\n    {\n      \"Effect\": \"Allow\",\n      \"Action\": [\n        \"ec2:RunInstances\",\n        \"ec2:StartInstances\",\n        \"ec2:StopInstances\",\n        \"ec2:TerminateInstances\",\n        \"ec2:DescribeInstances\",\n        \"ec2:DescribeSecurityGroups\",\n        \"ec2:DescribeSubnets\",\n        \"ec2:DescribeVpcs\"\n      ],\n      \"Resource\": \"*\",\n      \"Condition\": {\n        \"StringEquals\": {\n          \"aws:RequestedRegion\": \"eu-west-2\"\n        }\n      }\n    }\n  ]\n}"
+      }
+    },
+    {
+      "id": 2,
+      "title": "VPC + Networking",
+      "tagline": "Build the network that protects everything else",
+      "objective": "Create a cost-safe VPC using Terraform that will serve as the networking foundation for the SaaS application. Understand why every architectural decision matters.",
+      "problem": {
+        "title": "Why networking is not optional",
+        "content": "In 2019, Capital One disclosed a breach affecting 106 million customers. The attacker exploited a misconfigured WAF to access an EC2 instance's metadata service, which returned IAM role credentials with broad S3 access. The instance was in a VPC, but the network configuration allowed the attack path.\n\nThe post-incident analysis identified several failures, but the network architecture was a contributing factor: the EC2 instance had more network access than it needed, and the security groups were overly permissive.\n\nA VPC is not just a container for your resources — it's your first architectural decision about what can talk to what. Public subnets expose resources to the internet. Private subnets don't. The choice of which subnet a resource lives in determines its attack surface.\n\nThis week, you build the network. In future weeks, every resource you create will go into either the public or private subnet, and you'll need to justify why."
+      },
+      "concepts": [
+        {
+          "title": "VPC = Your Private Data Centre in the Cloud",
+          "content": "A VPC (Virtual Private Cloud) is a logically isolated section of AWS where you launch resources. Think of it as renting a floor in a building — you control the internal layout (rooms, corridors, locks) but the building owner (AWS) manages the structure, power, and plumbing.\n\nWithout a VPC, your resources would sit in AWS's default network alongside everyone else's. A VPC gives you:\n\n- **Isolation**: Your resources are on a private network. Other AWS customers can't reach them.\n- **Control**: You define the IP range, subnets, route tables, and access rules.\n- **Segmentation**: You can separate public-facing components (load balancers) from private ones (databases)."
+        },
+        {
+          "title": "CIDR Blocks and Subnets",
+          "content": "A CIDR block defines your IP address range. `10.20.0.0/16` gives you 65,536 addresses (10.20.0.0 to 10.20.255.255). The `/16` means the first 16 bits are fixed.\n\nSubnets divide this range into smaller blocks:\n- `10.20.1.0/24` = 256 addresses (10.20.1.0 to 10.20.1.255)\n- `10.20.101.0/24` = 256 addresses (10.20.101.0 to 10.20.101.255)\n\nWhy this numbering? Convention. Low numbers (1-99) for public subnets, high numbers (101-199) for private. This makes it immediately obvious from an IP address whether a resource is public-facing or internal. When you're debugging at 2am, this matters.\n\nAWS reserves 5 addresses per subnet (network address, VPC router, DNS, future use, broadcast). So a /24 subnet actually gives you 251 usable addresses."
+        },
+        {
+          "title": "Public vs Private Subnets",
+          "content": "A subnet is 'public' if it has a route to an Internet Gateway. A subnet is 'private' if it doesn't. That's it. There's no checkbox — it's determined entirely by the route table.\n\n**Public subnet**: Resources here can receive inbound traffic from the internet (if their security group allows it) and can make outbound requests. Use for: load balancers, bastion hosts, NAT gateways.\n\n**Private subnet**: Resources here cannot be reached from the internet directly. They can only communicate with other resources in the VPC. Use for: application servers, databases, caches, internal services.\n\n**The NAT question**: What if a private resource needs to make outbound requests (e.g., downloading packages, calling external APIs)? That requires a NAT Gateway in the public subnet, which costs ~$32/month. For this course, we skip it to save cost. The trade-off: private resources can't reach the internet. We'll address this when it becomes a problem."
+        },
+        {
+          "title": "Security Groups vs NACLs",
+          "content": "Both control traffic, but at different levels:\n\n**Security Groups** (stateful, instance-level):\n- Attached to ENIs (network interfaces on instances/services).\n- If you allow inbound traffic on port 443, the response is automatically allowed.\n- Default: deny all inbound, allow all outbound.\n- You reference other security groups by ID, enabling rules like 'allow traffic from the load balancer SG'.\n\n**NACLs** (stateless, subnet-level):\n- Applied to all traffic entering/leaving a subnet.\n- Stateless means you must explicitly allow both inbound AND outbound.\n- Evaluated in rule-number order. First match wins.\n- Default: allow all. Most teams leave them alone and use security groups.\n\nFor this course, we use security groups only. NACLs add a layer of defence but also a layer of confusion, and security groups alone provide sufficient control for learning."
+        },
+        {
+          "title": "Why Terraform (Not ClickOps, Not CloudFormation)",
+          "content": "You could create a VPC through the AWS Console in 10 minutes. But then:\n- You can't reproduce it in a second account.\n- You can't review changes before applying them.\n- You can't destroy it cleanly.\n- You can't version-control it.\n\nTerraform solves all four. You describe the desired state in `.tf` files, Terraform figures out what to create/modify/destroy to reach that state.\n\nWhy Terraform over CloudFormation? CloudFormation is AWS-native but AWS-only. Terraform works across providers (AWS, GCP, Azure, Cloudflare, etc.) and has a much larger ecosystem. Most SaaS companies use Terraform. The syntax (HCL) is also more readable than CloudFormation's JSON/YAML."
+        }
+      ],
+      "tasks": [
+        {
+          "id": "w2t1",
+          "title": "Install Terraform and initialise the project",
+          "description": "Install the Terraform CLI. Create `terraform/vpc/` with `versions.tf` specifying the AWS provider (~> 5.0) and eu-west-2 region. Run `terraform init`.",
+          "verification": "`terraform version` shows >= 1.5.0. `terraform init` completes without errors.",
+          "why": "Terraform is the industry standard for AWS IaC. You need to be fluent in it."
+        },
+        {
+          "id": "w2t2",
+          "title": "Create the VPC",
+          "description": "Define an `aws_vpc` resource with CIDR `10.20.0.0/16`. Enable DNS hostnames and DNS support. Tag it with your standard tags.",
+          "verification": "`terraform apply` creates the VPC. `aws ec2 describe-vpcs --filters Name=tag:Name,Values=training-vpc --profile training-admin` returns it.",
+          "why": "The VPC is the boundary. Everything you build for the rest of this course lives inside it."
+        },
+        {
+          "id": "w2t3",
+          "title": "Create public and private subnets with an Internet Gateway",
+          "description": "Create an Internet Gateway, a public subnet (10.20.1.0/24) with `map_public_ip_on_launch = true`, and a private subnet (10.20.101.0/24). Create route tables: the public one routes 0.0.0.0/0 to the IGW, the private one has no internet route. Associate subnets with their route tables.",
+          "verification": "`terraform apply` succeeds. Verify routes: `aws ec2 describe-route-tables --filters Name=vpc-id,Values=<vpc-id> --profile training-admin`.",
+          "why": "This subnet split is the most fundamental network architecture pattern in AWS. It determines the security posture of every resource you deploy."
+        },
+        {
+          "id": "w2t4",
+          "title": "Create a base security group",
+          "description": "Create an application security group with outbound access allowed and no inbound rules. This will be expanded in future weeks as you add services.",
+          "verification": "`aws ec2 describe-security-groups --filters Name=group-name,Values=training-sg-app --profile training-admin` shows the SG with no inbound rules.",
+          "why": "Starting with zero inbound rules and adding them deliberately is the principle of least privilege applied to networking."
+        },
+        {
+          "id": "w2t5",
+          "title": "Verify cost safety",
+          "description": "Confirm no NAT gateways, no EC2 instances, no Elastic IPs exist. Run `terraform state list` to see all managed resources.",
+          "verification": "`aws ec2 describe-nat-gateways --region eu-west-2 --profile training-admin` returns an empty list. `aws ec2 describe-instances --region eu-west-2 --profile training-admin --query 'Reservations[].Instances[].InstanceId'` returns an empty list.",
+          "why": "VPCs, subnets, route tables, and security groups are free. NAT gateways, Elastic IPs, and running instances are not. You must know the cost boundary."
+        },
+        {
+          "id": "w2t6",
+          "title": "Destroy and recreate",
+          "description": "Run `terraform destroy`, confirm everything is deleted, then run `terraform apply` again to rebuild it. Time how long it takes.",
+          "verification": "Destroy completes cleanly. Apply rebuilds all resources. The new VPC has a different ID but identical configuration.",
+          "why": "If you can't destroy and recreate your infrastructure in minutes, you don't have infrastructure as code — you have a to-do list. This test proves your Terraform is complete and your state is clean."
+        }
+      ],
+      "codeChallenge": {
+        "title": "Subnet Design Challenge",
+        "description": "You're designing a VPC for a SaaS app that needs: a public-facing API, a private application tier, a private database tier, and high availability across two AZs. Design the subnet layout.",
+        "code": "# Fill in the CIDR blocks and describe what goes in each subnet.\n# VPC CIDR: 10.0.0.0/16\n\n# AZ: eu-west-2a\n# Public subnet A:   CIDR = ???    (Contains: ???)\n# App subnet A:      CIDR = ???    (Contains: ???)\n# Data subnet A:     CIDR = ???    (Contains: ???)\n\n# AZ: eu-west-2b\n# Public subnet B:   CIDR = ???    (Contains: ???)\n# App subnet B:      CIDR = ???    (Contains: ???)\n# Data subnet B:     CIDR = ???    (Contains: ???)\n\n# Questions:\n# 1. Why two AZs?\n# 2. What route table does each subnet type get?\n# 3. If the app tier needs to call an external payment API, what changes?",
+        "hints": [
+          "Use /24 subnets. Public: 10.0.1.0/24 and 10.0.2.0/24. App: 10.0.11.0/24 and 10.0.12.0/24. Data: 10.0.21.0/24 and 10.0.22.0/24.",
+          "Public subnets contain ALBs and NAT gateways. App subnets contain ECS tasks or EC2 instances. Data subnets contain RDS and ElastiCache.",
+          "Two AZs give you availability zone redundancy. If eu-west-2a goes down, eu-west-2b keeps serving traffic."
+        ],
+        "solution": "# VPC CIDR: 10.0.0.0/16\n\n# AZ: eu-west-2a\n# Public subnet A:  10.0.1.0/24   (ALB, NAT Gateway)\n# App subnet A:     10.0.11.0/24  (ECS Fargate tasks / EC2 app servers)\n# Data subnet A:    10.0.21.0/24  (RDS primary, ElastiCache)\n\n# AZ: eu-west-2b\n# Public subnet B:  10.0.2.0/24   (ALB, NAT Gateway)\n# App subnet B:     10.0.12.0/24  (ECS Fargate tasks / EC2 app servers)\n# Data subnet B:    10.0.22.0/24  (RDS standby replica)\n\n# 1. Two AZs: AWS Availability Zones are physically separate data centres.\n#    An AZ failure (rare but real — us-east-1 had one in Dec 2021) takes down\n#    everything in that AZ. Two AZs means your app survives a single AZ failure.\n\n# 2. Route tables:\n#    Public subnets -> route table with 0.0.0.0/0 -> Internet Gateway\n#    App subnets    -> route table with 0.0.0.0/0 -> NAT Gateway (in same AZ)\n#    Data subnets   -> route table with no internet route (fully isolated)\n\n# 3. If app tier needs to call an external API, the app subnets need\n#    outbound internet access via a NAT Gateway in the public subnet.\n#    This costs ~$32/month per NAT Gateway, so you typically have one per AZ."
+      }
+    },
+    {
+      "id": 3,
+      "title": "Compute: EC2",
+      "tagline": "Put something on the network that actually runs",
+      "objective": "Launch an EC2 instance in your VPC, connect to it, and serve HTTP traffic. Understand instance types, AMIs, user data, and the instance metadata service.",
+      "problem": {
+        "title": "Why EC2 still matters",
+        "content": "It's 2026 and everyone talks about serverless and containers. So why learn EC2?\n\nBecause EC2 is the foundation everything else runs on. ECS tasks run on EC2 (unless you use Fargate). EKS nodes are EC2. Even Lambda functions run on EC2 instances managed by AWS (you just don't see them).\n\nMore practically: many SaaS companies still run on EC2 directly. It's the most flexible compute option — you control the OS, the runtime, the network interfaces, the storage. When a container or Lambda doesn't fit (GPU workloads, long-running processes, specific kernel requirements), EC2 is the answer.\n\nYou need to understand EC2 before you can understand why containers and serverless are improvements over it."
+      },
+      "concepts": [
+        {
+          "title": "AMIs, Instance Types, and the EC2 Launch Model",
+          "content": "Launching an EC2 instance requires three decisions:\n\n**1. AMI (Amazon Machine Image)**: The disk snapshot your instance boots from. Think of it as a pre-installed OS. `ami-0c76bd4bd302bf885` might be Amazon Linux 2023 in eu-west-2. AMIs are region-specific — the same OS has different AMI IDs in different regions.\n\n**2. Instance Type**: The hardware. `t3.micro` gives you 2 vCPU and 1GB RAM (free tier eligible). `c5.xlarge` gives you 4 vCPU and 8GB RAM optimised for compute. The naming convention: family (t=burstable, c=compute, m=general, r=memory), generation (3, 5, 6, 7), size (micro, small, medium, large, xlarge).\n\n**3. Key Pair**: An SSH key pair for connecting. AWS stores the public key; you keep the private key. Lose it and you lose SSH access (though Session Manager is a better alternative)."
+        },
+        {
+          "title": "User Data and Instance Metadata",
+          "content": "**User Data** is a script that runs when the instance first boots. It's how you install software, configure services, and bootstrap your instance without SSH-ing in manually. Example:\n\n```bash\n#!/bin/bash\nyum update -y\nyum install -y httpd\nsystemctl start httpd\necho '<h1>Training Instance</h1>' > /var/www/html/index.html\n```\n\nThis turns a bare Amazon Linux instance into a web server in ~30 seconds.\n\n**Instance Metadata** is an HTTP endpoint (http://169.254.169.254) available inside every EC2 instance. It returns information about the instance: ID, IP address, region, and critically, IAM role credentials.\n\nThe metadata service is how AWS SDKs get credentials without you hardcoding keys. It's also how the Capital One breach worked — the attacker reached the metadata service and extracted IAM credentials. AWS has since introduced IMDSv2 (requires a session token) to mitigate this. Always enforce IMDSv2."
+        },
+        {
+          "title": "Security Groups in Practice",
+          "content": "In week 2 you created an empty security group. Now you'll add rules:\n\n- **Inbound port 22 (SSH)**: Allow only your IP. Never allow 0.0.0.0/0 on port 22 in production.\n- **Inbound port 80 (HTTP)**: Allow from anywhere (0.0.0.0/0) if this is a public web server.\n- **Outbound**: Already allowing all (default).\n\nSecurity groups are stateful: if you allow inbound on port 80, the response traffic is automatically allowed outbound. You don't need a separate outbound rule for HTTP responses.\n\nA critical pattern: instead of allowing traffic from IP ranges, allow traffic from other security groups. In week 4, you'll create an ALB security group and configure the app security group to only accept traffic from the ALB SG. This means even if someone knows the instance's IP, they can't reach it directly."
+        }
+      ],
+      "tasks": [
+        {
+          "id": "w3t1",
+          "title": "Launch an EC2 instance in the public subnet",
+          "description": "Add an `aws_instance` resource to your Terraform. Use Amazon Linux 2023 AMI, t3.micro, your public subnet, and the app security group. Add user data that installs and starts a web server.",
+          "verification": "Instance appears in the EC2 console. `terraform state show aws_instance.app` shows the instance details.",
+          "why": "This is the first time something actually runs in your VPC. The instance inherits the network configuration you built in week 2."
+        },
+        {
+          "id": "w3t2",
+          "title": "Add SSH and HTTP security group rules",
+          "description": "Add inbound rules to your app security group: port 22 from your IP only, port 80 from 0.0.0.0/0. Use Terraform data sources to look up your current IP, or hardcode it.",
+          "verification": "Curl the instance's public IP on port 80 — you should see your web server response. SSH into the instance.",
+          "why": "Security group rules are the per-instance firewall. Getting this right is the difference between a working server and an exposed one."
+        },
+        {
+          "id": "w3t3",
+          "title": "Enforce IMDSv2",
+          "description": "Configure the instance metadata options to require IMDSv2 (http_tokens = required). Verify by SSHing into the instance and trying both IMDSv1 and v2 requests.",
+          "verification": "IMDSv1 request (`curl http://169.254.169.254/latest/meta-data/`) should fail. IMDSv2 request (with token header) should succeed.",
+          "why": "The instance metadata service is one of the most exploited attack vectors in cloud infrastructure. IMDSv2 significantly reduces the risk of SSRF attacks."
+        },
+        {
+          "id": "w3t4",
+          "title": "Attach an IAM instance profile",
+          "description": "Create an IAM role for the EC2 instance with read-only S3 access. Create an instance profile and attach it to the instance. From the instance, use the AWS CLI (pre-installed on Amazon Linux) to list S3 buckets.",
+          "verification": "SSH into the instance, run `aws s3 ls` — it should work without any credentials configured on the instance.",
+          "why": "Instance profiles are how EC2 instances get AWS credentials without access keys. The credentials are served via the metadata service and rotate automatically. This is the correct way to give an application AWS access."
+        },
+        {
+          "id": "w3t5",
+          "title": "Destroy and verify cost",
+          "description": "Destroy all resources including the EC2 instance. Verify the billing dashboard shows the expected charges (should be $0 or near-zero for a few hours of t3.micro).",
+          "verification": "`terraform destroy` completes cleanly. No running instances in the EC2 console.",
+          "why": "A forgotten t3.micro costs ~$7.50/month. A forgotten m5.xlarge costs ~$140/month. Building the destroy habit now prevents bill shock later."
+        }
+      ],
+      "codeChallenge": {
+        "title": "User Data Debugging",
+        "description": "Your EC2 instance launched but the web server isn't responding on port 80. You can SSH in on port 22. Diagnose the problem. Here's the Terraform config:",
+        "code": "resource \"aws_instance\" \"app\" {\n  ami           = \"ami-0c76bd4bd302bf885\"\n  instance_type = \"t3.micro\"\n  subnet_id     = aws_subnet.public.id\n  vpc_security_group_ids = [aws_security_group.app.id]\n\n  user_data = <<-EOF\n    #!/bin/bash\n    yum update -y\n    yum install -y nginx\n    systemctl start nginx\n  EOF\n\n  tags = { Name = \"training-app\" }\n}",
+        "hints": [
+          "Check the security group — does it allow inbound port 80?",
+          "Check the user data indentation — the leading spaces before #!/bin/bash can cause the script to not execute.",
+          "Amazon Linux 2023 uses `dnf`, not `yum`. And nginx is in the `amazon-linux-extras` package on AL2, not in the base repo.",
+          "Check /var/log/cloud-init-output.log on the instance for user data execution errors."
+        ],
+        "solution": "# Issues:\n# 1. User data has leading whitespace before #!/bin/bash — the shebang\n#    must be the very first characters of the script.\n# 2. Amazon Linux 2023 uses dnf, not yum (though yum is symlinked on AL2023,\n#    nginx may not be in the default repos).\n# 3. Security group likely missing inbound port 80 rule.\n# 4. The instance might not have a public IP if subnet settings are wrong.\n\n# Fixed user data:\nuser_data = <<-EOF\n#!/bin/bash\ndnf update -y\ndnf install -y httpd\nsystemctl start httpd\nsystemctl enable httpd\necho '<h1>Training</h1>' > /var/www/html/index.html\nEOF"
+      }
+    },
+    {
+      "id": 4,
+      "title": "Load Balancing + Auto Scaling",
+      "tagline": "Eliminate the single point of failure",
+      "objective": "Deploy an Application Load Balancer in front of an auto-scaling group. Understand health checks, target groups, and horizontal scaling.",
+      "problem": {
+        "title": "Why one server is never enough",
+        "content": "Your SaaS app has one EC2 instance. A customer reports it's down. You check — the instance's disk filled up, and the application crashed. You restart it, but during the 4 minutes of downtime, your payment webhook endpoint missed 23 Stripe events. Those customers didn't get their subscriptions activated.\n\nThis is what 'single point of failure' means in practice. It's not an abstract concept — it's missed revenue, angry customers, and 2am pages.\n\nThe solution: run multiple instances behind a load balancer. If one dies, the others keep serving traffic while a new one launches automatically. The load balancer performs health checks — if an instance stops responding, it's removed from rotation within seconds.\n\nThis is the most impactful architectural upgrade you can make: going from 'one server' to 'a fleet of servers behind a load balancer with auto-healing'."
+      },
+      "concepts": [
+        {
+          "title": "Application Load Balancer (ALB)",
+          "content": "An ALB distributes incoming HTTP/HTTPS traffic across multiple targets (EC2 instances, containers, Lambda functions). It operates at Layer 7 (HTTP), meaning it can route based on URL path, hostname, headers, or query strings.\n\nKey components:\n- **Listener**: Waits for connections on a port (80 or 443). Defines rules for routing.\n- **Target Group**: A set of targets that receive traffic. Has its own health check configuration.\n- **Health Check**: The ALB pings each target on a configurable path (e.g., `/health`). If a target fails N consecutive checks, it's deregistered.\n\nThe ALB itself runs across multiple AZs and is highly available — AWS manages its redundancy. You never interact with the ALB's underlying instances."
+        },
+        {
+          "title": "Auto Scaling Groups",
+          "content": "An ASG maintains a fleet of EC2 instances. You define:\n- **Min**: Minimum number of instances (e.g., 2). The ASG will never scale below this.\n- **Max**: Maximum number (e.g., 10). The ASG will never scale above this.\n- **Desired**: Target count. The ASG launches or terminates instances to match this.\n\nScaling policies adjust the desired count based on metrics:\n- **Target tracking**: 'Keep average CPU at 60%.' The ASG adds/removes instances to hit that target.\n- **Step scaling**: 'If CPU > 80% for 5 minutes, add 2 instances.'\n- **Scheduled**: 'Scale to 10 instances at 9am on weekdays.'\n\nThe ASG uses a **Launch Template** that defines the AMI, instance type, security groups, user data, and IAM role. Every instance in the fleet is identical — this is immutable infrastructure."
+        },
+        {
+          "title": "Health Checks: The ALB's Kill Switch",
+          "content": "Health checks are the mechanism that makes auto-healing work. The ALB sends an HTTP request to each target every N seconds (default: 30). If the target returns a 200-399 status code, it's healthy. If it fails M consecutive checks (default: 2), it's marked unhealthy and removed from the target group.\n\nThe ASG also monitors health. If the ALB reports a target as unhealthy, the ASG terminates that instance and launches a replacement.\n\nYour `/health` endpoint should check downstream dependencies (database connectivity, cache availability). A 200 from `/health` should mean 'I can serve real requests', not just 'the process is running'.\n\nCommon mistake: setting the health check path to `/` on an app that requires authentication. The ALB gets a 302 redirect to the login page, treats it as unhealthy, and kills all instances in a loop."
+        }
+      ],
+      "tasks": [
+        {
+          "id": "w4t1",
+          "title": "Create a Launch Template",
+          "description": "Define an `aws_launch_template` with the same config as your week 3 instance (Amazon Linux 2023, t3.micro, user data with web server). Add the instance profile from week 3.",
+          "verification": "Launch template appears in the EC2 console. No instances are launched yet.",
+          "why": "Launch templates are reusable instance blueprints. They decouple 'what to launch' from 'how many to launch'."
+        },
+        {
+          "id": "w4t2",
+          "title": "Create an ALB with a target group",
+          "description": "Create an ALB in the public subnet, a target group pointing to port 80 with a `/health` health check, and a listener on port 80 forwarding to the target group.",
+          "verification": "The ALB has a DNS name. Curling it returns a 502 (no targets yet).",
+          "why": "The ALB is the single entry point for all traffic. Clients never connect directly to instances."
+        },
+        {
+          "id": "w4t3",
+          "title": "Create an Auto Scaling Group",
+          "description": "Create an ASG with min=1, max=3, desired=2. Attach it to the ALB target group. Use the launch template from task 1.",
+          "verification": "Two instances launch automatically. The ALB starts returning 200s. Terminate one instance manually — a replacement launches within minutes.",
+          "why": "This is auto-healing. You just made your application resilient to instance failure."
+        },
+        {
+          "id": "w4t4",
+          "title": "Add a scaling policy",
+          "description": "Add a target tracking scaling policy: maintain average CPU utilisation at 60%. Install `stress` on an instance and generate CPU load to trigger scaling.",
+          "verification": "Under load, the ASG launches a third instance. When load drops, it terminates back to 2.",
+          "why": "This is how real SaaS apps handle traffic spikes. Black Friday, viral posts, DDoS attempts — the infrastructure adapts."
+        },
+        {
+          "id": "w4t5",
+          "title": "Destroy everything",
+          "description": "Run `terraform destroy`. Verify the ALB, ASG, instances, and launch template are all deleted.",
+          "verification": "No running instances, no load balancers in the console.",
+          "why": "ALBs cost ~$16/month idle. Instances cost per hour. Destroying promptly is essential."
+        }
+      ],
+      "codeChallenge": {
+        "title": "Availability Zone Failure Simulation",
+        "description": "Your ASG runs 2 instances across 2 AZs (eu-west-2a and eu-west-2b). Simulate a scenario where eu-west-2a becomes unavailable. What happens?",
+        "code": "# Current config:\n# ASG: min=2, max=4, desired=2\n# Subnets: eu-west-2a (public-1), eu-west-2b (public-2)\n# Instance distribution: 1 in eu-west-2a, 1 in eu-west-2b\n\n# Scenario: eu-west-2a goes down.\n# Answer these questions:\n# 1. What happens to the instance in eu-west-2a?\n# 2. What does the ASG do?\n# 3. What does the ALB do?\n# 4. Is there any period of degraded service?\n# 5. What would happen if both instances were in eu-west-2a?",
+        "hints": [
+          "The ASG detects the instance as unhealthy (EC2 status check failure).",
+          "The ASG tries to maintain the desired count across available AZs.",
+          "The ALB stops routing to unhealthy targets within 1-2 health check intervals."
+        ],
+        "solution": "# 1. The instance in eu-west-2a becomes unreachable. Its EC2 status checks fail.\n# 2. The ASG detects the failure and launches a replacement — but only in\n#    eu-west-2b (since eu-west-2a is unavailable). You now have 2 instances\n#    in eu-west-2b.\n# 3. The ALB marks the eu-west-2a instance as unhealthy after 2 failed\n#    health checks (~60 seconds) and stops routing traffic to it.\n# 4. Yes — for 30-60 seconds, half your capacity is gone. The surviving\n#    instance handles all traffic until the replacement launches (~2-3 min).\n# 5. If both instances were in eu-west-2a, you'd have a full outage until\n#    the ASG launches replacements in eu-west-2b. This is why you MUST\n#    spread across at least 2 AZs."
+      }
+    },
+    {
+      "id": 5,
+      "title": "DNS + TLS",
+      "tagline": "Make it real with HTTPS",
+      "objective": "Register or use a domain with Route 53, provision a TLS certificate with ACM, and terminate HTTPS at the ALB. No production system serves traffic over HTTP.",
+      "problem": {
+        "title": "Why HTTPS is non-negotiable",
+        "content": "Every browser now shows a warning for HTTP sites. Search engines penalise them. Users don't trust them. But the technical reasons go deeper:\n\nHTTP traffic is plaintext. Anyone on the network path — your ISP, a coffee shop WiFi, a compromised router — can read every request and response. Credentials, session tokens, API keys, customer data: all visible.\n\nHTTPS encrypts the entire conversation using TLS. The certificate also proves identity — it tells the browser 'this really is yourdomain.com, not an impersonator.'\n\nAWS makes this nearly free. ACM (AWS Certificate Manager) issues TLS certificates at no cost for use with ALBs, CloudFront, and API Gateway. You have no excuse not to use it."
+      },
+      "concepts": [
+        {
+          "title": "Route 53: DNS as a Service",
+          "content": "Route 53 is AWS's DNS service. It does three things:\n\n1. **Domain registration**: Buy a domain (e.g., yoursaas.com).\n2. **Hosted zones**: Manage DNS records (A, CNAME, MX, TXT).\n3. **Health checks and routing**: Route traffic based on latency, geography, or health.\n\nFor this course, the key concept is **alias records**. A normal A record points to an IP address. An alias record points to an AWS resource (ALB, CloudFront, S3). Alias records are free (no Route 53 query charges) and automatically track the resource's IP changes.\n\nYou'll create an alias record pointing your domain to the ALB. When the ALB's IP changes (and it does — ALBs are not static), the DNS follows automatically."
+        },
+        {
+          "title": "ACM and TLS Termination",
+          "content": "TLS termination means 'where does encryption end?' With an ALB, traffic is encrypted between the client and the load balancer. The ALB decrypts it and forwards plaintext HTTP to your instances.\n\nThis is the standard pattern for two reasons:\n1. The ALB handles the CPU-intensive TLS handshake, not your app.\n2. You manage one certificate on the ALB, not one per instance.\n\nACM handles certificate provisioning and renewal. You request a certificate for your domain, validate ownership via DNS (add a CNAME record ACM provides), and ACM auto-renews it every 13 months. You never touch a private key."
+        }
+      ],
+      "tasks": [
+        {
+          "id": "w5t1",
+          "title": "Set up a Route 53 hosted zone",
+          "description": "If you own a domain, create a hosted zone for it. If not, register a cheap one (`.click` domains are ~$3/year). Update the domain's nameservers to point to Route 53's NS records.",
+          "verification": "`dig yourdomain.com NS` returns Route 53 nameservers.",
+          "why": "DNS is the front door. Without it, users type IP addresses."
+        },
+        {
+          "id": "w5t2",
+          "title": "Provision an ACM certificate",
+          "description": "Request a certificate in ACM for your domain (and `*.yourdomain.com` for wildcard coverage). Use DNS validation — ACM will give you a CNAME record to add to Route 53.",
+          "verification": "ACM shows the certificate status as 'Issued'.",
+          "why": "TLS certificates prove identity and enable encryption. ACM automates what used to be a painful manual process with Let's Encrypt or commercial CAs."
+        },
+        {
+          "id": "w5t3",
+          "title": "Add HTTPS listener to ALB",
+          "description": "Add a listener on port 443 using the ACM certificate. Modify the port 80 listener to redirect to 443. Create a Route 53 alias record pointing your domain to the ALB.",
+          "verification": "Navigate to `https://yourdomain.com` — you should see a valid certificate and your web server's response. `http://yourdomain.com` should redirect to HTTPS.",
+          "why": "This is the complete traffic path: client -> DNS -> ALB (TLS termination) -> instance. Every production web application uses this pattern."
+        }
+      ],
+      "codeChallenge": null
+    },
+    {
+      "id": 6,
+      "title": "Databases: RDS",
+      "tagline": "Store data where it belongs — behind a wall",
+      "objective": "Deploy a PostgreSQL RDS instance in a private subnet. Connect to it from your application tier. Understand subnet groups, automated backups, and connection management.",
+      "problem": {
+        "title": "Why your database is the most important thing to protect",
+        "content": "In 2017, a MongoDB database belonging to an Indian healthcare company was found publicly accessible on the internet. It contained the records of 35,000 HIV patients, including names, addresses, and treatment details. The database had no password.\n\nPublicly accessible databases are one of the most common cloud misconfigurations. AWS makes it easy to check 'publicly accessible: yes' when creating an RDS instance. That single checkbox puts your database on the internet.\n\nThe correct architecture: your database goes in a private subnet with no internet route. The only thing that can reach it is your application tier, via a security group rule that explicitly allows traffic from the app security group on the PostgreSQL port (5432). This is defence in depth — even if your application is compromised, the attacker still needs to reach the database through a controlled path."
+      },
+      "concepts": [
+        {
+          "title": "RDS vs Self-Managed Databases",
+          "content": "You could install PostgreSQL on an EC2 instance. You'd be responsible for:\n- OS patching\n- Database patching\n- Backups (and testing restores)\n- Replication\n- Failover\n- Monitoring disk space, connections, and query performance\n- Encryption at rest and in transit\n\nRDS handles all of this. You choose the engine, instance size, and storage. AWS manages the rest. The trade-off: less control (you can't SSH into the database server) and ~20% higher cost than bare EC2.\n\nFor SaaS applications, RDS is almost always the right choice. Your competitive advantage is your application, not your ability to manage a database server."
+        },
+        {
+          "title": "Subnet Groups and Network Placement",
+          "content": "An RDS subnet group tells AWS which subnets the database can use. For multi-AZ deployments, you need subnets in at least two AZs.\n\nThe subnet group should only contain private subnets. Setting `publicly_accessible = false` ensures the database only gets a private IP address. Combined with security group rules that only allow your app tier to connect, this creates a strong network boundary.\n\nConnection string pattern: `postgresql://user:password@endpoint:5432/dbname`. The endpoint is a DNS name like `training-db.abc123.eu-west-2.rds.amazonaws.com`. For multi-AZ, this DNS name automatically points to the primary instance. During failover, AWS updates the DNS to point to the standby — your application reconnects without code changes."
+        },
+        {
+          "title": "Backups, Snapshots, and the Restore Test",
+          "content": "RDS automated backups create a daily snapshot and continuously archive transaction logs to S3. You set a retention period (1-35 days). You can restore to any point within that window.\n\nManual snapshots persist until you delete them. Use them before risky operations (schema migrations, bulk deletes).\n\nThe most important practice that most teams skip: **test your restores**. A backup you've never restored is a hope, not a backup. In this course, you'll create a snapshot, delete data, and restore from the snapshot to verify the process works."
+        }
+      ],
+      "tasks": [
+        {
+          "id": "w6t1",
+          "title": "Create a second private subnet for the DB subnet group",
+          "description": "RDS multi-AZ requires subnets in at least 2 AZs. Add a second private subnet in eu-west-2b (10.20.102.0/24). Create an `aws_db_subnet_group` containing both private subnets.",
+          "verification": "Terraform creates the subnet and subnet group without errors.",
+          "why": "This is a hard requirement for RDS multi-AZ. It also sets up your VPC for proper high availability."
+        },
+        {
+          "id": "w6t2",
+          "title": "Deploy a PostgreSQL RDS instance",
+          "description": "Create a `db.t3.micro` PostgreSQL instance in the private subnet group. Set `publicly_accessible = false`. Use a security group that only allows port 5432 from the app security group. Set `skip_final_snapshot = true` for training (never do this in production).",
+          "verification": "The RDS instance shows 'Available' in the console. It has a private IP only.",
+          "why": "This is the correct production topology: database in a private subnet, accessible only from the app tier."
+        },
+        {
+          "id": "w6t3",
+          "title": "Connect from EC2 to RDS",
+          "description": "Launch an EC2 instance in the public subnet (or use Session Manager). Install the PostgreSQL client. Connect to the RDS instance using its endpoint.",
+          "verification": "`psql -h <endpoint> -U <username> -d <dbname>` connects successfully. Create a table and insert a row.",
+          "why": "This proves the network path works: public subnet (EC2) -> private subnet (RDS) via security group rule. This is the same path your application will use."
+        },
+        {
+          "id": "w6t4",
+          "title": "Test backup and restore",
+          "description": "Take a manual snapshot. Delete the table you created. Restore the snapshot to a new RDS instance. Verify the data is intact.",
+          "verification": "The restored instance contains the original table and data.",
+          "why": "A backup you've never tested is not a backup. This exercise builds muscle memory for disaster recovery."
+        },
+        {
+          "id": "w6t5",
+          "title": "Destroy everything",
+          "description": "Run `terraform destroy`. Verify the RDS instance, subnet group, and any restored instances are deleted. Check the billing dashboard.",
+          "verification": "No RDS instances in the console. Billing shows expected charges (a few hours of db.t3.micro).",
+          "why": "RDS instances cost money even when idle (unlike VPCs and subnets). Destroy immediately after completing the week."
+        }
+      ],
+      "codeChallenge": {
+        "title": "Connection Security Audit",
+        "description": "You're reviewing a colleague's Terraform for an RDS deployment. Find the security problems.",
+        "code": "resource \"aws_db_instance\" \"main\" {\n  identifier     = \"prod-database\"\n  engine         = \"postgres\"\n  engine_version = \"15.4\"\n  instance_class = \"db.t3.medium\"\n  \n  db_name  = \"myapp\"\n  username = \"admin\"\n  password = \"SuperSecret123!\"\n  \n  publicly_accessible    = true\n  skip_final_snapshot    = true\n  backup_retention_period = 0\n  \n  vpc_security_group_ids = [aws_security_group.db.id]\n}\n\nresource \"aws_security_group\" \"db\" {\n  name   = \"db-sg\"\n  vpc_id = aws_vpc.main.id\n\n  ingress {\n    from_port   = 5432\n    to_port     = 5432\n    protocol    = \"tcp\"\n    cidr_blocks = [\"0.0.0.0/0\"]\n  }\n}",
+        "hints": [
+          "Password is hardcoded in plain text in the Terraform file.",
+          "publicly_accessible is true — the database will get a public IP.",
+          "The security group allows 5432 from anywhere on the internet.",
+          "backup_retention_period is 0 — no automated backups.",
+          "skip_final_snapshot is true — if someone runs terraform destroy, the data is gone."
+        ],
+        "solution": "# Issues found:\n# 1. Password in plain text. Use aws_secretsmanager_secret or pass via variable.\n# 2. publicly_accessible = true. Must be false. Always.\n# 3. Security group allows 5432 from 0.0.0.0/0. Should only allow from app SG.\n# 4. backup_retention_period = 0. Should be at least 7 for production.\n# 5. skip_final_snapshot = true. In production, this should be false.\n# 6. No encryption at rest (storage_encrypted not set).\n# 7. No multi-AZ (multi_az not set).\n# 8. Username 'admin' is guessable. Use something less predictable."
+      }
+    },
+    {
+      "id": 7,
+      "title": "Storage + CDN",
+      "tagline": "Serve assets fast and cheap",
+      "objective": "Use S3 for object storage and CloudFront for global content delivery. Understand bucket policies, presigned URLs, and cache invalidation.",
+      "problem": {
+        "title": "Why you don't serve images from your app server",
+        "content": "A SaaS app serves user-uploaded images (avatars, documents, exports). If those images are stored on the EC2 instance's disk and served by your web server, you have three problems:\n\n1. **Scalability**: Each instance has its own disk. If user A uploads to instance 1, instance 2 can't serve it. Auto-scaling breaks file storage.\n2. **Cost**: Bandwidth from EC2 is $0.09/GB. Bandwidth from CloudFront is $0.085/GB (cheaper with higher volumes). But the real cost is CPU — your app server spends cycles serving static files instead of handling requests.\n3. **Durability**: An EC2 instance's EBS volume is in one AZ. If the AZ goes down, the files are inaccessible. S3 provides 99.999999999% (eleven 9s) durability across multiple AZs.\n\nThe correct architecture: upload files to S3, serve them through CloudFront. Your app server generates presigned URLs and handles metadata — it never touches the file bytes."
+      },
+      "concepts": [
+        {
+          "title": "S3: Not Just File Storage",
+          "content": "S3 is AWS's object storage. Think of it as an infinitely scalable key-value store where keys are file paths and values are file contents.\n\nKey properties:\n- **Durability**: 11 9s. AWS would need to lose multiple data centres simultaneously to lose your data.\n- **Availability**: 99.99% for Standard tier.\n- **Pricing**: $0.023/GB/month for storage. Requests cost fractions of a cent.\n- **No provisioning**: No disks to size, no capacity to plan.\n\nS3 is not a filesystem. There are no directories — the `/` in `uploads/user123/avatar.png` is part of the key name, not a directory path. The console shows it as folders for convenience.\n\nAccess control layers: IAM policies (who can call S3 APIs), bucket policies (what operations are allowed on the bucket), and ACLs (legacy, avoid them). Block Public Access is a bucket-level setting that overrides everything — leave it on unless you have a specific reason."
+        },
+        {
+          "title": "CloudFront: Edge Caching",
+          "content": "CloudFront is a CDN with ~400 edge locations worldwide. When a user requests a file:\n\n1. Request hits the nearest edge location (e.g., London).\n2. If the edge has the file cached, it returns it immediately (~1-5ms latency).\n3. If not, the edge fetches it from the origin (your S3 bucket), caches it, and returns it.\n\nSubsequent requests from the same region are served from cache without touching S3. This reduces latency, reduces S3 costs, and reduces load on your origin.\n\nFor a SaaS app, CloudFront sits in front of both your S3 assets and (optionally) your ALB. Static assets get long cache TTLs (days or weeks). API responses get short ones or none.\n\nCache invalidation (telling CloudFront to discard cached versions) is the hard part. Use versioned filenames (`style.v2.css`) instead of invalidation requests when possible."
+        }
+      ],
+      "tasks": [
+        {
+          "id": "w7t1",
+          "title": "Create an S3 bucket with proper security",
+          "description": "Create a bucket with Block Public Access enabled, server-side encryption (AES-256), and versioning enabled. Add a bucket policy that allows CloudFront to read objects.",
+          "verification": "`aws s3 ls` shows the bucket. Trying to access a file via the S3 URL directly returns Access Denied.",
+          "why": "S3 bucket misconfigurations are the second most common cloud breach vector after credential leaks. Getting the security right from the start matters."
+        },
+        {
+          "id": "w7t2",
+          "title": "Create a CloudFront distribution",
+          "description": "Create a CloudFront distribution with the S3 bucket as origin. Use an Origin Access Identity (OAI) or Origin Access Control (OAC) so CloudFront can read from S3 but the public cannot access S3 directly.",
+          "verification": "Upload a file to S3. Access it via the CloudFront domain name. Access directly via S3 URL is denied.",
+          "why": "OAI/OAC ensures all traffic goes through CloudFront. This gives you caching, HTTPS, and access logging — none of which you get with direct S3 access."
+        },
+        {
+          "id": "w7t3",
+          "title": "Generate a presigned URL from your app",
+          "description": "Write a small script (Python or Node.js) that generates an S3 presigned upload URL. Upload a file using that URL. Verify it's accessible through CloudFront.",
+          "verification": "The presigned URL allows upload for 15 minutes, then expires. The file appears in S3 and is served via CloudFront.",
+          "why": "Presigned URLs let users upload directly to S3 without routing file bytes through your server. This is how real SaaS apps handle file uploads at scale."
+        }
+      ],
+      "codeChallenge": null
+    },
+    {
+      "id": 8,
+      "title": "Containers: ECS Fargate",
+      "tagline": "Stop managing servers, start deploying containers",
+      "objective": "Containerise a simple application and deploy it on ECS Fargate. Replace raw EC2 instances with managed containers.",
+      "problem": {
+        "title": "Why containers replace EC2 for application workloads",
+        "content": "With EC2, you manage everything: the OS, the runtime, the application, the dependencies. When you deploy a new version, you either:\n\n1. SSH in and update the code (fragile, unrepeatable, terrifying).\n2. Build a new AMI and replace instances (slow — AMI builds take 10-20 minutes).\n3. Use a deployment tool like CodeDeploy (complex, another thing to manage).\n\nContainers package your application and its dependencies into a single image. Deployment becomes: push a new image, tell ECS to use it. ECS pulls the image, starts new containers, health-checks them, and drains the old ones. The entire process takes 2-5 minutes.\n\nFargate removes the remaining operational burden: you don't manage the EC2 instances that run the containers. You define CPU and memory requirements; AWS handles the rest. You pay per vCPU-second and GB-second, not per instance-hour.\n\nThe trade-off: Fargate is ~20% more expensive than running your own ECS cluster on EC2 instances, and you give up kernel-level control. For most SaaS workloads, this is a good trade."
+      },
+      "concepts": [
+        {
+          "title": "Docker, ECR, and the Container Lifecycle",
+          "content": "A **Docker image** is a filesystem snapshot plus a startup command. You build it from a `Dockerfile`:\n\n```dockerfile\nFROM node:20-alpine\nWORKDIR /app\nCOPY package*.json ./\nRUN npm ci --production\nCOPY . .\nEXPOSE 3000\nCMD [\"node\", \"server.js\"]\n```\n\n**ECR (Elastic Container Registry)** is AWS's Docker registry. You push images to ECR, and ECS pulls them from there. ECR integrates with IAM — no Docker Hub credentials to manage.\n\nThe lifecycle: Code -> Docker build -> Push to ECR -> ECS pulls and runs. In CI/CD (week 9), this becomes automated: push to main -> build -> push -> deploy."
+        },
+        {
+          "title": "ECS Concepts: Tasks, Services, and Clusters",
+          "content": "**Task Definition**: A blueprint describing one or more containers. Specifies the image, CPU/memory, port mappings, environment variables, and IAM task role.\n\n**Task**: A running instance of a task definition. One task = one copy of your container(s).\n\n**Service**: Maintains a desired count of tasks. If a task dies, the service launches a replacement. Integrates with ALB for load balancing.\n\n**Cluster**: A logical grouping of services. With Fargate, the cluster is just a namespace — there are no underlying instances to manage.\n\nThe ECS task role is the container equivalent of an EC2 instance profile. It provides AWS credentials to your application without environment variables or config files."
+        },
+        {
+          "title": "Networking for Fargate Tasks",
+          "content": "Fargate tasks use `awsvpc` networking mode: each task gets its own ENI (Elastic Network Interface) with a private IP address in your VPC.\n\nThis means:\n- Tasks are subject to your VPC's security groups and route tables.\n- Tasks in a private subnet can reach your RDS instance (if the SG allows it) but not the internet (unless you add a NAT gateway).\n- The ALB routes traffic to individual task IPs.\n\nFor outbound internet access (pulling Docker images from ECR, calling external APIs), Fargate tasks in private subnets need either a NAT gateway or VPC endpoints. ECR, S3, and CloudWatch have VPC endpoints — these are cheaper than a NAT gateway for AWS-only traffic."
+        }
+      ],
+      "tasks": [
+        {
+          "id": "w8t1",
+          "title": "Write a Dockerfile for a simple app",
+          "description": "Create a simple Node.js or Python app with a `/` endpoint and a `/health` endpoint. Write a Dockerfile, build it locally, and test it with `docker run`.",
+          "verification": "`curl localhost:3000/health` returns 200. The app logs requests to stdout.",
+          "why": "If you can't build and run it locally, you can't debug it when it fails on ECS."
+        },
+        {
+          "id": "w8t2",
+          "title": "Push to ECR",
+          "description": "Create an ECR repository. Authenticate Docker to ECR. Build, tag, and push your image.",
+          "verification": "The image appears in the ECR console with the correct tag.",
+          "why": "ECR is where ECS pulls images from. Understanding the push flow is essential for CI/CD."
+        },
+        {
+          "id": "w8t3",
+          "title": "Create an ECS Fargate service",
+          "description": "Create a Fargate cluster, task definition (256 CPU, 512 MB memory), and service with desired count of 2. Attach to your existing ALB target group.",
+          "verification": "Two tasks are running. The ALB returns your app's response. Health checks pass.",
+          "why": "This replaces the EC2 ASG from week 4 with a managed container service. Same architecture, less operational burden."
+        },
+        {
+          "id": "w8t4",
+          "title": "Deploy a new version",
+          "description": "Make a change to your app. Build and push a new image tag. Update the task definition and service to use the new image. Watch the rolling deployment.",
+          "verification": "The new version is served. Old tasks are drained and stopped. No downtime during the deployment.",
+          "why": "This is the deployment workflow you'll use in production. Container image tags are your versioning mechanism."
+        },
+        {
+          "id": "w8t5",
+          "title": "Destroy everything",
+          "description": "Run `terraform destroy`. Delete the ECR repository. Verify no tasks or services are running.",
+          "verification": "No ECS tasks, no ECR images, no running compute.",
+          "why": "Fargate charges per-second for running tasks. Don't leave them overnight."
+        }
+      ],
+      "codeChallenge": {
+        "title": "Task Role vs Execution Role",
+        "description": "ECS has two IAM roles that confuse everyone. Explain the difference and assign the correct permissions to each.",
+        "code": "# Fill in what permissions each role needs:\n\n# Task Execution Role (used by the ECS agent):\n# Purpose: ???\n# Needs access to: ???\n\n# Task Role (used by your application code):\n# Purpose: ???\n# Needs access to: ???\n\n# Scenario: Your app reads from S3 and writes to DynamoDB.\n# The container image is in ECR.\n# Logs go to CloudWatch.\n# Which role gets which permissions?",
+        "hints": [
+          "The execution role is used by the ECS infrastructure, not your code.",
+          "Think about what happens BEFORE your code starts vs what your code does at runtime.",
+          "ECR image pulls happen before your container starts."
+        ],
+        "solution": "# Task Execution Role (used by the ECS agent, before your code runs):\n# Purpose: Pull container images, send logs, retrieve secrets\n# Needs: ecr:GetAuthorizationToken, ecr:BatchGetImage,\n#         logs:CreateLogStream, logs:PutLogEvents,\n#         secretsmanager:GetSecretValue (if using secrets)\n# AWS provides a managed policy: AmazonECSTaskExecutionRolePolicy\n\n# Task Role (used by your application code at runtime):\n# Purpose: AWS API calls your application makes\n# Needs: s3:GetObject, dynamodb:PutItem, dynamodb:GetItem\n# This is the role your AWS SDK picks up automatically.\n\n# Common mistake: putting S3 permissions on the execution role.\n# Your code can't use the execution role — it uses the task role.\n# If you mix them up, your app gets 'Access Denied' at runtime."
+      }
+    },
+    {
+      "id": 9,
+      "title": "CI/CD",
+      "tagline": "Automate the path from code to production",
+      "objective": "Build a deployment pipeline that takes code from a GitHub push to a running ECS service with zero manual steps.",
+      "problem": {
+        "title": "Why manual deploys are a risk, not a process",
+        "content": "Team A deploys by SSHing into a server and running `git pull`. One day, a junior developer runs it on the production server instead of staging. The application crashes because the migration hasn't run. Recovery takes 45 minutes.\n\nTeam B deploys by clicking through the AWS Console — update the task definition, create a new service revision, wait. One day, they accidentally paste the staging Docker image tag into the production service. Customers see test data for 20 minutes.\n\nTeam C has a CI/CD pipeline. Every push to `main` triggers: build -> test -> push image -> deploy to staging -> run integration tests -> deploy to production. If any step fails, the pipeline stops. The deploy is the same every time because a machine does it.\n\nCI/CD isn't about speed (though it's faster). It's about repeatability and auditability. You can answer 'what was deployed, when, by whom, from which commit' with a link to the pipeline run."
+      },
+      "concepts": [
+        {
+          "title": "GitHub Actions for AWS Deployment",
+          "content": "GitHub Actions runs workflows in response to events (push, pull request, schedule). A workflow is a YAML file in `.github/workflows/`.\n\nFor AWS deployment, the key pattern is OIDC authentication — GitHub Actions assumes an IAM role in your AWS account without storing access keys. This is more secure than access keys and is the AWS-recommended approach.\n\nThe deployment workflow:\n1. Push to `main` triggers the workflow.\n2. Authenticate to AWS via OIDC.\n3. Build the Docker image.\n4. Push to ECR.\n5. Update the ECS task definition with the new image tag.\n6. Update the ECS service to use the new task definition.\n7. Wait for the deployment to stabilise.\n\nEach step is auditable. If step 6 fails, you know exactly which image and commit caused it."
+        },
+        {
+          "title": "Deployment Strategies",
+          "content": "**Rolling update** (ECS default): New tasks start alongside old ones. Once healthy, old tasks drain and stop. Brief period where both versions run simultaneously.\n\n**Blue/green**: Two environments exist. Deploy to the inactive one, test it, then switch traffic. Instant rollback by switching back. More expensive (double the compute during deployment).\n\n**Canary**: Route a small percentage of traffic (e.g., 5%) to the new version. Monitor for errors. Gradually increase to 100%. Slowest but safest.\n\nFor this course, rolling updates are sufficient. In production, blue/green (via CodeDeploy with ECS) is the most common SaaS pattern."
+        }
+      ],
+      "tasks": [
+        {
+          "id": "w9t1",
+          "title": "Set up OIDC authentication",
+          "description": "Create an IAM OIDC identity provider for GitHub Actions. Create an IAM role that GitHub Actions can assume with permissions for ECR, ECS, and CloudWatch.",
+          "verification": "A GitHub Actions workflow can authenticate and run `aws sts get-caller-identity` successfully.",
+          "why": "OIDC eliminates stored credentials. No access keys means no leaked access keys."
+        },
+        {
+          "id": "w9t2",
+          "title": "Create a build-and-push workflow",
+          "description": "Write a GitHub Actions workflow that builds the Docker image and pushes it to ECR on every push to `main`. Tag images with the git SHA.",
+          "verification": "Push a change. The workflow runs. A new image appears in ECR with the commit SHA as the tag.",
+          "why": "Git SHA tags create an unambiguous link between code and image. You can always answer 'what code is running?'"
+        },
+        {
+          "id": "w9t3",
+          "title": "Add ECS deployment to the pipeline",
+          "description": "Extend the workflow to update the ECS task definition and service after pushing the image. Use the `amazon-ecs-deploy-task-definition` action.",
+          "verification": "Push a code change. The pipeline builds, pushes, and deploys. The ECS service runs the new version. Verify by checking the application response.",
+          "why": "This closes the loop: code change -> running in production. No manual steps, no room for human error."
+        },
+        {
+          "id": "w9t4",
+          "title": "Add a rollback mechanism",
+          "description": "Document or script the process for rolling back to a previous task definition revision. Test it by deploying a broken version and rolling back.",
+          "verification": "Deploy a version that fails health checks. The rollback procedure restores the previous working version.",
+          "why": "Every deploy pipeline needs a rollback plan. If you can't undo a deploy in under 5 minutes, your pipeline isn't production-ready."
+        }
+      ],
+      "codeChallenge": null
+    },
+    {
+      "id": 10,
+      "title": "Monitoring + Alerting",
+      "tagline": "See problems before your customers do",
+      "objective": "Set up CloudWatch dashboards, alarms, and log aggregation. Build an operational view of your application.",
+      "problem": {
+        "title": "Why flying blind costs more than monitoring",
+        "content": "A SaaS company's RDS instance runs out of storage at 3am. The application starts returning 500 errors. The on-call engineer is paged at 3:47am (when the error rate alarm finally triggers). By then, customers in Asia-Pacific have experienced 47 minutes of failures.\n\nThe disk usage had been growing linearly for weeks. A simple CloudWatch alarm on `FreeStorageSpace < 5GB` would have triggered days earlier, giving the team time to resize the storage during business hours.\n\nMonitoring is not about dashboards that look impressive. It's about three things:\n1. **Know when something breaks** (alerts).\n2. **Know what broke** (logs).\n3. **Know why it broke** (metrics).\n\nIn this week, you'll build all three."
+      },
+      "concepts": [
+        {
+          "title": "The Four Golden Signals",
+          "content": "Google's SRE book defines four signals that matter for any service:\n\n1. **Latency**: How long requests take. Track p50, p95, and p99. A p99 of 2 seconds means 1 in 100 requests takes over 2 seconds — those users are having a bad experience.\n\n2. **Traffic**: Request rate. Useful for capacity planning and detecting anomalies (sudden spike = viral moment or DDoS).\n\n3. **Errors**: The rate of failed requests. 5xx errors indicate server problems. 4xx errors indicate client problems (but a spike in 4xx might mean your API changed and clients haven't updated).\n\n4. **Saturation**: How full your resources are. CPU, memory, disk, database connections. When a resource hits 100%, everything backed up behind it fails.\n\nYour CloudWatch dashboard should show all four signals at a glance."
+        },
+        {
+          "title": "CloudWatch Metrics, Logs, and Alarms",
+          "content": "**Metrics**: Numerical time-series data. AWS services publish metrics automatically (EC2 CPU, RDS connections, ALB request count). Custom metrics let you publish application-specific data (e.g., number of active tenants).\n\n**Logs**: Text data from your application and AWS services. ECS containers send stdout/stderr to CloudWatch Logs. You can search, filter, and create metrics from log patterns (e.g., count lines containing 'ERROR').\n\n**Alarms**: Watch a metric and trigger actions when it crosses a threshold. Actions include SNS notifications (email, SMS, Slack via Lambda) and Auto Scaling policies.\n\nAlarm states:\n- **OK**: Metric is within the threshold.\n- **ALARM**: Metric has crossed the threshold for N consecutive evaluation periods.\n- **INSUFFICIENT_DATA**: Not enough data points yet.\n\nCommon mistake: setting alarms that fire too often. An alarm that fires 5 times a week gets ignored. Tune your thresholds so alarms mean 'something is actually wrong'."
+        }
+      ],
+      "tasks": [
+        {
+          "id": "w10t1",
+          "title": "Create a CloudWatch dashboard",
+          "description": "Build a dashboard showing: ALB request count, ALB 5xx errors, ECS CPU/memory utilisation, RDS connections and free storage. Use Terraform to define it as code.",
+          "verification": "The dashboard renders in the CloudWatch console with real data from your services.",
+          "why": "A single-pane view of your system's health. When something goes wrong, this is the first place you look."
+        },
+        {
+          "id": "w10t2",
+          "title": "Set up log aggregation",
+          "description": "Ensure your ECS tasks send logs to CloudWatch Logs. Create a log group with a 7-day retention period. Use Logs Insights to query for errors.",
+          "verification": "Running a Logs Insights query like `fields @timestamp, @message | filter @message like /ERROR/ | sort @timestamp desc` returns results.",
+          "why": "When an alarm fires, logs are how you diagnose the root cause. Without centralised logging, you'd need to SSH into containers — which you can't do with Fargate."
+        },
+        {
+          "id": "w10t3",
+          "title": "Create actionable alarms",
+          "description": "Create alarms for: ALB 5xx rate > 5% for 2 consecutive periods, ECS task count < desired count, RDS free storage < 2GB. Connect to an SNS topic that sends email notifications.",
+          "verification": "Force a condition that triggers an alarm (e.g., stop a task). Receive an email notification. Resolve the condition and confirm the alarm returns to OK.",
+          "why": "Alarms are your early warning system. They should tell you about problems before customers notice."
+        }
+      ],
+      "codeChallenge": null
+    },
+    {
+      "id": 11,
+      "title": "Serverless",
+      "tagline": "Run code without thinking about servers",
+      "objective": "Build a Lambda function behind API Gateway. Understand when serverless is the right choice and when it's not.",
+      "problem": {
+        "title": "Not everything needs a server running 24/7",
+        "content": "Your SaaS app has an endpoint that generates PDF invoices. It's called maybe 50 times per day, each call takes 3-5 seconds. You're running this on an ECS service with 2 tasks (for availability), costing ~$15/month.\n\nWith Lambda, those 50 invocations per day cost: 50 calls × 5 seconds × 512MB = 250 GB-seconds/day × 30 days = 7,500 GB-seconds/month. At $0.0000166667 per GB-second, that's $0.13/month. Plus 1,500 requests at $0.20 per million = effectively free.\n\n$0.13 vs $15.00 per month. For bursty, low-frequency workloads, serverless is dramatically cheaper.\n\nBut Lambda has constraints: 15-minute maximum execution time, 10GB memory limit, cold starts (first invocation after idle is slower), and no persistent local state. A web server handling 1,000 requests per second is cheaper and more predictable on ECS.\n\nKnowing when to use Lambda vs containers is an architectural skill. This week, you'll build both and compare."
+      },
+      "concepts": [
+        {
+          "title": "Lambda Execution Model",
+          "content": "When you invoke a Lambda function:\n1. AWS allocates a micro-VM (Firecracker) with your runtime and code.\n2. Your handler function executes.\n3. AWS keeps the environment warm for 5-15 minutes (reuse window).\n4. If another invocation arrives during the warm window, it reuses the environment (warm start, ~1ms overhead).\n5. If not, the environment is destroyed. Next invocation is a cold start (100ms-2s depending on runtime and package size).\n\nCold starts matter for user-facing APIs. If a user's request triggers a cold start, they wait an extra second. Strategies to mitigate: provisioned concurrency (keeps N environments warm, costs money), smaller deployment packages, and choosing lightweight runtimes (Python/Node.js start faster than Java)."
+        },
+        {
+          "title": "API Gateway: The HTTP Front Door for Lambda",
+          "content": "API Gateway provides an HTTP endpoint that triggers Lambda functions. Two types:\n\n**REST API**: Full-featured, supports request validation, API keys, usage plans, caching. More expensive ($3.50 per million requests).\n\n**HTTP API**: Simpler, cheaper ($1.00 per million requests), sufficient for most use cases. Supports JWT authorisation and Lambda integration.\n\nThe integration pattern: API Gateway receives an HTTP request, transforms it into a Lambda event, invokes the function, and transforms the response back to HTTP. Your Lambda function never opens a socket or manages connections."
+        }
+      ],
+      "tasks": [
+        {
+          "id": "w11t1",
+          "title": "Create a Lambda function",
+          "description": "Write a Lambda function (Python or Node.js) that accepts a JSON payload and returns a processed response. Deploy it using Terraform. Give it an execution role with CloudWatch Logs permissions.",
+          "verification": "Invoke it from the CLI: `aws lambda invoke --function-name training-processor --payload '{\"name\":\"test\"}' response.json`. Check the output and CloudWatch logs.",
+          "why": "Understanding the Lambda programming model — handler, event, context, response format — is foundational for serverless."
+        },
+        {
+          "id": "w11t2",
+          "title": "Add API Gateway",
+          "description": "Create an HTTP API with a route that triggers your Lambda function. Test it with curl.",
+          "verification": "`curl https://<api-id>.execute-api.eu-west-2.amazonaws.com/process -d '{\"name\":\"test\"}'` returns the expected response.",
+          "why": "API Gateway turns Lambda into an HTTP service. This is how serverless microservices expose their functionality."
+        },
+        {
+          "id": "w11t3",
+          "title": "Measure cold start vs warm start",
+          "description": "Invoke the function after a 20-minute idle period (cold start). Then invoke it again immediately (warm start). Compare the `Duration` and `Init Duration` in CloudWatch metrics.",
+          "verification": "You can see the difference in the Lambda metrics. Cold start shows an Init Duration; warm start doesn't.",
+          "why": "Cold starts are Lambda's biggest operational concern. You need to know the numbers for your runtime and package size to make architectural decisions."
+        },
+        {
+          "id": "w11t4",
+          "title": "Connect Lambda to your VPC",
+          "description": "Configure the Lambda function to run inside your VPC's private subnet. Give it a security group that allows access to your RDS instance. Invoke the function and have it query the database.",
+          "verification": "The function returns data from RDS. Check that cold starts are longer in VPC mode (the ENI attachment adds time).",
+          "why": "VPC-connected Lambda is how serverless functions access private resources. The trade-off is significantly longer cold starts (15-30 seconds historically, now ~1-2 seconds with improved ENI management)."
+        }
+      ],
+      "codeChallenge": {
+        "title": "Lambda vs ECS: Cost Comparison",
+        "description": "Calculate the monthly cost for both Lambda and ECS Fargate for the following workloads. Which is cheaper for each?",
+        "code": "# Workload A: Image thumbnail generator\n# - 10,000 invocations/day\n# - Average duration: 2 seconds\n# - Memory: 1024 MB\n# - Cost per Lambda GB-second: $0.0000166667\n# - Cost per Lambda request: $0.20 per million\n# Lambda cost/month = ???\n# ECS cost/month (256 CPU, 512 MB, 1 task, always running) = ???\n\n# Workload B: Real-time chat API\n# - 500 requests/second average\n# - Average duration: 50ms\n# - Memory: 256 MB\n# Lambda cost/month = ???\n# ECS cost/month (512 CPU, 1024 MB, 2 tasks) = ???\n\n# Workload C: Nightly data export\n# - 1 invocation/day\n# - Duration: 10 minutes\n# - Memory: 2048 MB\n# Lambda cost/month = ???\n# ECS cost/month (256 CPU, 512 MB, 1 task, always running) = ???",
+        "hints": [
+          "Lambda: (invocations × duration_seconds × memory_GB × $0.0000166667) + (invocations × $0.0000002)",
+          "ECS Fargate: (vCPU × hours × $0.04048) + (GB memory × hours × $0.004445) per month",
+          "Remember Lambda has a free tier of 400,000 GB-seconds and 1M requests per month."
+        ],
+        "solution": "# Workload A: Image thumbnails\n# Lambda: 10,000/day × 30 = 300,000 invocations/month\n#   GB-seconds: 300,000 × 2s × 1GB = 600,000 GB-s\n#   Compute: (600,000 - 400,000 free) × $0.0000166667 = $3.33\n#   Requests: (300,000 - 1,000,000 free) = $0 (under free tier)\n#   LAMBDA TOTAL: ~$3.33/month\n# ECS: 0.25 vCPU × 730h × $0.04048 + 0.5GB × 730h × $0.004445\n#   = $7.39 + $1.62 = $9.01/month\n#   WINNER: Lambda (3x cheaper)\n\n# Workload B: Chat API\n# Lambda: 500/s × 86400 × 30 = 1,296,000,000 invocations/month\n#   GB-seconds: 1.296B × 0.05s × 0.25GB = 16,200,000 GB-s\n#   Compute: 16,200,000 × $0.0000166667 = $270.00\n#   Requests: 1,296M × $0.0000002 = $259.20\n#   LAMBDA TOTAL: ~$529/month\n# ECS: 2 tasks × (0.5 vCPU × 730h × $0.04048 + 1GB × 730h × $0.004445)\n#   = 2 × ($14.78 + $3.24) = $36.04/month\n#   WINNER: ECS (15x cheaper)\n\n# Workload C: Nightly export\n# Lambda: 30 invocations/month\n#   GB-seconds: 30 × 600s × 2GB = 36,000 GB-s (under free tier)\n#   LAMBDA TOTAL: ~$0 (free tier covers it)\n# ECS: Always running: $9.01/month even though it works 5 hours/month\n#   WINNER: Lambda (literally free)"
+      }
+    },
+    {
+      "id": 12,
+      "title": "Multi-Tenancy + Architecture Review",
+      "tagline": "Serve many customers from one infrastructure",
+      "objective": "Design and partially implement a multi-tenant architecture. Understand tenant isolation, data partitioning, and cost allocation — the problems that make SaaS different from single-tenant applications.",
+      "problem": {
+        "title": "The problem that defines SaaS",
+        "content": "You've built an application: VPC, ALB, ECS, RDS, S3, monitoring, CI/CD. One customer uses it. It costs $80/month to run.\n\nNow you have 50 customers. Do you run 50 copies of the infrastructure ($4,000/month)? Or do you share one infrastructure across all 50 ($80/month + incremental scaling costs)?\n\nMulti-tenancy is the shared approach. It's what makes SaaS economically viable. But it introduces the hardest problems in SaaS engineering:\n\n1. **Data isolation**: Customer A must never see Customer B's data. This isn't optional — it's a legal requirement under GDPR, SOC 2, and most enterprise contracts.\n2. **Performance isolation**: Customer A running a massive export shouldn't slow down Customer B's real-time queries.\n3. **Cost attribution**: Which customer is responsible for 60% of your S3 bill?\n4. **Configuration isolation**: Customer A wants SAML SSO. Customer B wants API key auth. Customer C wants both.\n\nThis week ties together everything you've built and examines it through the lens of multi-tenancy."
+      },
+      "concepts": [
+        {
+          "title": "Tenant Isolation Models",
+          "content": "There are three primary models, each with different trade-offs:\n\n**Silo (one infrastructure per tenant)**:\n- Each tenant gets their own VPC, ECS cluster, RDS instance.\n- Maximum isolation. A breach in Tenant A cannot affect Tenant B.\n- Extremely expensive. Doesn't scale beyond ~20 tenants without significant automation.\n- Used for enterprise customers with strict compliance requirements.\n\n**Pool (shared infrastructure, shared database)**:\n- All tenants share the same VPC, ECS, RDS instance.\n- Tenant data separated by a `tenant_id` column in every table.\n- Cheapest. Scales to thousands of tenants.\n- Risk: a missing WHERE clause leaks data across tenants. Every query must be tenant-scoped.\n- Used for SMB and self-serve tiers.\n\n**Bridge (shared compute, separate databases)**:\n- Shared VPC and ECS, but each tenant gets their own RDS instance or schema.\n- Balance of isolation and cost.\n- Moderate operational complexity (managing N databases).\n- Used for mid-market customers who need data isolation but not full silo."
+        },
+        {
+          "title": "Row-Level Security with PostgreSQL",
+          "content": "If you use the pool model, PostgreSQL's Row-Level Security (RLS) is a powerful safety net:\n\n```sql\nALTER TABLE orders ENABLE ROW LEVEL SECURITY;\n\nCREATE POLICY tenant_isolation ON orders\n  USING (tenant_id = current_setting('app.current_tenant')::uuid);\n```\n\nWith RLS enabled, every query is automatically filtered by tenant_id. Even if your application code forgets the WHERE clause, the database enforces isolation.\n\nYour application sets the tenant context on each connection:\n```sql\nSET app.current_tenant = 'tenant-uuid-here';\n```\n\nThis must happen at the start of every request, typically in middleware. If you forget to set it, the query returns no rows (safe failure) rather than all tenants' data.\n\nRLS is not a replacement for application-level filtering. It's a defence-in-depth layer — the last line of defence if your code has a bug."
+        },
+        {
+          "title": "Architecture Review: What You've Built",
+          "content": "Over 12 weeks, you've assembled a production-grade AWS architecture:\n\n```\nClient → Route 53 → CloudFront → ALB (HTTPS)\n                                     ↓\n                              ECS Fargate (private subnet)\n                                     ↓\n                              RDS PostgreSQL (private subnet)\n                              S3 (assets)\n\nCI/CD: GitHub → Actions → ECR → ECS\nMonitoring: CloudWatch → SNS → Email/Slack\nIaC: Terraform (all resources version-controlled)\nSecurity: IAM roles, security groups, private subnets, IMDSv2\n```\n\nThis is not a toy architecture. With minor modifications (multi-AZ RDS, NAT gateway, WAF), this is what many SaaS companies run in production. The difference is scale, operational maturity, and the hundreds of small decisions made over time."
+        }
+      ],
+      "tasks": [
+        {
+          "id": "w12t1",
+          "title": "Implement Row-Level Security",
+          "description": "Create a multi-tenant schema in your RDS instance. Enable RLS on all tables. Test that Tenant A cannot read Tenant B's data even with a direct SQL query.",
+          "verification": "Set tenant context to Tenant A and query the orders table — only Tenant A's orders return. Repeat for Tenant B.",
+          "why": "Data leaks between tenants are the most damaging bug a SaaS app can have. RLS is a critical safeguard."
+        },
+        {
+          "id": "w12t2",
+          "title": "Add tenant-scoped IAM and tagging",
+          "description": "Implement S3 bucket policies that restrict access by tenant prefix. Tag tenant-specific resources. Use AWS Cost Explorer tags to see per-tenant costs.",
+          "verification": "Tenant A's IAM role can only access `s3://bucket/tenant-a/*`. Cost Explorer shows costs grouped by tenant tag.",
+          "why": "Cost attribution is how you price your SaaS. If you can't measure per-tenant cost, you can't set profitable pricing."
+        },
+        {
+          "id": "w12t3",
+          "title": "Draw the final architecture diagram",
+          "description": "Create a comprehensive architecture diagram of everything you've built. Include all services, network boundaries, data flows, and security controls. Use draw.io, Excalidraw, or ASCII art.",
+          "verification": "The diagram accurately represents the deployed architecture. A new engineer could understand the system by reading it.",
+          "why": "Architecture diagrams are documentation that people actually read. If you can't draw it, you don't fully understand it."
+        },
+        {
+          "id": "w12t4",
+          "title": "Final destruction and cost review",
+          "description": "Destroy all resources across all Terraform directories. Review the total spend over the 12 weeks in AWS Cost Explorer. Document what each week cost.",
+          "verification": "All resources destroyed. Total spend documented and under £25/month average.",
+          "why": "The course is over. Leave no resources running. The final cost review proves you can build real infrastructure within a training budget."
+        }
+      ],
+      "codeChallenge": {
+        "title": "Tenant Isolation Audit",
+        "description": "Review this multi-tenant Express.js middleware. Find the isolation failures.",
+        "code": "// Middleware that sets tenant context\napp.use((req, res, next) => {\n  const tenantId = req.headers['x-tenant-id'];\n  req.tenantId = tenantId;\n  next();\n});\n\n// Route that fetches orders\napp.get('/orders', async (req, res) => {\n  const orders = await db.query(\n    'SELECT * FROM orders WHERE tenant_id = $1',\n    [req.tenantId]\n  );\n  res.json(orders.rows);\n});\n\n// Route that fetches a specific order\napp.get('/orders/:id', async (req, res) => {\n  const order = await db.query(\n    'SELECT * FROM orders WHERE id = $1',\n    [req.params.id]\n  );\n  res.json(order.rows[0]);\n});\n\n// Route that downloads an invoice\napp.get('/orders/:id/invoice', async (req, res) => {\n  const key = `invoices/${req.params.id}.pdf`;\n  const url = s3.getSignedUrl('getObject', { Bucket: 'invoices', Key: key });\n  res.redirect(url);\n});",
+        "hints": [
+          "What validates the x-tenant-id header? Could a client set any tenant ID?",
+          "The /orders/:id route fetches by order ID but doesn't filter by tenant.",
+          "The invoice download constructs the S3 key from the order ID without checking tenant ownership.",
+          "What happens if x-tenant-id is missing entirely?"
+        ],
+        "solution": "# Issues:\n# 1. No authentication — x-tenant-id is trusted from the client header.\n#    An attacker can set any tenant ID. The tenant ID must come from an\n#    authenticated session (JWT, session cookie), not a client-supplied header.\n#\n# 2. /orders/:id doesn't filter by tenant_id. Any user can fetch any order\n#    by guessing the ID. Fix: WHERE id = $1 AND tenant_id = $2.\n#\n# 3. Invoice download doesn't verify the order belongs to the requesting\n#    tenant. An attacker could enumerate order IDs to download other\n#    tenants' invoices.\n#\n# 4. If x-tenant-id is missing, tenantId is undefined. The SQL query\n#    becomes WHERE tenant_id = undefined, which depending on the driver\n#    might return no rows (safe) or throw an error (visible to attacker).\n#    The middleware should reject requests with no tenant context.\n#\n# 5. No RLS as a safety net. If any query misses the tenant_id filter,\n#    data leaks silently."
+      }
+    }
+  ]
+}
