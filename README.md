@@ -1,30 +1,22 @@
 # AWS SaaS Architecture — From Zero to Production
 
-A 12-week technical course for engineers who want to understand AWS infrastructure, not just use it.
+A 12-week self-paced course covering AWS infrastructure from IAM to multi-tenant SaaS architecture.
 
-## What This Is
+## About This Project
 
-A self-paced course that builds a production-grade AWS architecture from scratch. Each week adds a layer — networking, compute, databases, containers, CI/CD, monitoring, serverless — until you have a real SaaS-ready infrastructure.
+This course was written and is maintained by AI (Claude and ChatGPT), as an experiment in self-guided technical learning supported by LLMs. A human learner defines the objectives and critiques the output; the LLMs generate the curriculum, explanatory material, code challenges, and the browser-based course interface.
 
-Every topic starts with **why it matters** (real incidents, cost implications, architectural trade-offs) before telling you what to do.
+The content is technical and opinionated. It skips the fluff and focuses on real architectural decisions, real-world failure modes, and the "why" behind every task.
 
-## Running the Course Interface
+## Running the Course
 
-The course has a browser-based interface for viewing the curriculum and tracking progress. To run it:
+The course runs as a local web app — no server, no accounts, no dependencies.
 
 ```bash
-# Option A: Python (built-in)
 python -m http.server 8000 --directory app
-
-# Option B: Node.js
-npx serve ./app
-
-# Option C: Any static file server pointed at the ./app directory
 ```
 
-Then open http://localhost:8000 in your browser.
-
-Progress is saved in your browser's localStorage.
+Open http://localhost:8000. Progress is saved in your browser's localStorage.
 
 ## Curriculum
 
@@ -43,28 +35,25 @@ Progress is saved in your browser's localStorage.
 | 11 | Serverless | Lambda + API Gateway |
 | 12 | Multi-Tenancy | Tenant isolation, RLS, cost attribution, final architecture |
 
-## Rules
-
-- Monthly cost cap: £25
-- No resource survives the weekend
-- Destroy before moving to next module
-- Review billing every Friday
-- Tag everything: `Environment=training`, `Owner=keena`
-
 ## Repo Structure
 
 ```
-├── app/                    # Browser-based course interface
-│   ├── index.html          # Single-page app (no dependencies)
-│   └── curriculum.json     # Full course content (12 weeks)
-├── roadmap/                # Original markdown notes per week
-├── terraform/              # Infrastructure as code
-│   └── vpc/                # Week 2 VPC resources
-├── artifacts/              # IAM policies, budget configs
-├── destroy-checklist.md    # Weekly teardown checklist
-└── README.md
+app/
+  index.html              Single-page course interface (no dependencies)
+  curriculum.json          Full 12-week course content
+roadmap/
+  week-01-iam.md           Completed week notes with evidence
+  week-02-vpc.md           Completed week notes with evidence
+terraform/
+  vpc/                     Week 2 Terraform (VPC, subnets, security groups)
+artifacts/                 IAM policies and budget configs from week 1
+destroy-checklist.md       Weekly resource teardown checklist
 ```
 
-## Region
+## Cost Rules
 
-eu-west-2 (London)
+- Budget: £25/month
+- Destroy all resources before moving to the next week
+- Review billing every Friday
+- Tag everything: `Environment=training`, `Owner=keena`
+- Region: eu-west-2 (London)
